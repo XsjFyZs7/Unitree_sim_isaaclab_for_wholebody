@@ -179,6 +179,7 @@ def main():
         env_cfg.seed = args_cli.seed
         env = gym.make(args_cli.task, cfg=env_cfg).unwrapped
         env.seed(args_cli.seed)
+        env.reset_count = 0 # Initialize reset counter shared with action provider
         try:
             sensors_dict = getattr(env.scene, "sensors", {})
             if sensors_dict:
@@ -354,6 +355,7 @@ def main():
     env.sim.reset()
     env.reset()
     
+    
     # create simplified control configuration
     try:    
         control_config = ControlConfig(
@@ -377,6 +379,7 @@ def main():
         print("========= create dds =========")
         try:
             reset_pose_dds,sim_state_dds,dds_manager = create_dds_objects(args_cli,env)
+            safety_dds = dds_manager.get_object("safety")
         except Exception as e:
             print(f"Failed to create dds: {e}")
             return
@@ -433,7 +436,7 @@ def main():
         setup_signal_handlers(controller,dds_manager)
     else:
         setup_signal_handlers(controller)
-    print("Note: The DDS in Sim transmits messages on channel 1. Please ensure that other DDS instances use the same channel for message exchange by setting: ChannelFactoryInitialize(1).")
+    print("Note: The DDS in Sim transmits messages on channel 7. Please ensure that other DDS instances use the same channel for message exchange by setting: ChannelFactoryInitialize(7).")
     try:
         # start controller - start asynchronous components
         print("========= start controller =========")
@@ -459,7 +462,28 @@ def main():
                     try:
                         env_state = env.scene.get_state()
                         env_state_json =  sim_state_to_json(env_state)
-                        sim_state = {"init_state":env_state_json,"task_name":args_cli.task}
+                        # Get robot articulation to access joint torques
+                        joint_torques = sim_state_to_json(env.scene["robot"].data.applied_torque)
+
+                        # Call termination functions to get boolean flags
+                        from tasks.common_termination.base_termination_nav_wholebody import contact_force_termination, check_fall_risk_termination
+                        from tasks.common_termination.base_termination_nav_wholebody import check_joint_limit_termination, check_timeout_termination
+                        is_contact_force_exceeded = contact_force_termination(env)
+                        is_fall_risk = check_fall_risk_termination(env)
+                        nav_task_latest = getattr(sim_state_dds, "nav_task_latest", {})
+                        is_joint_limit = check_joint_limit_termination(env)
+                        is_timeout = check_timeout_termination(env)
+
+                        sim_state = {
+                            "init_state": env_state_json,
+                            "task_name": args_cli.task,
+                            "joint_torque": joint_torques,
+                            "is_unsafe": safety_dds.is_unsafe(),
+                            "force_exceeded": is_contact_force_exceeded.item(), # .item() converts tensor to Python bool
+                            "reset_count": getattr(env, "reset_count", 0),
+                            # "fall_risk": is_fall_risk.item(),
+                            # "is_timeout": is_timeout.item()
+                        }
                     except Exception as e:
                         print(f"Failed to get env state: {e}")
                         raise e
@@ -494,10 +518,12 @@ def main():
                                 print("reset object")
                                 env_cfg.event_manager.trigger("reset_object_self", env)
                                 reset_pose_dds.write_reset_pose_command(-1)
+                                if hasattr(env, "reset_count"): env.reset_count += 1
                             elif reset_category == '2' and not args_cli.enable_wholebody_dds:
                                 print("reset all")
                                 env_cfg.event_manager.trigger("reset_all_self", env)
                                 reset_pose_dds.write_reset_pose_command(-1)
+                                if hasattr(env, "reset_count"): env.reset_count += 1
                         except Exception as e:
                             print(f"Failed to write reset pose command: {e}")
                             raise e
@@ -652,27 +678,4 @@ if __name__ == "__main__":
         # Force exit
         os._exit(0)
 
-# python sim_main.py --device cpu  --enable_cameras  --task  Isaac-PickPlace-Cylinder-G129-Dex1-Joint   --enable_dex1_dds --robot_type g129
-# python sim_main.py --device cpu  --enable_cameras  --task Isaac-PickPlace-Cylinder-G129-Dex3-Joint    --enable_dex3_dds --robot_type g129
-# python sim_main.py --device cpu  --enable_cameras  --task Isaac-PickPlace-Cylinder-G129-Inspire-Joint    --enable_inspire_dds --robot_type g129
-
-# python sim_main.py --device cpu  --enable_cameras  --task Isaac-PickPlace-RedBlock-G129-Dex1-Joint     --enable_dex1_dds --robot_type g129
-# python sim_main.py --device cpu  --enable_cameras  --task Isaac-PickPlace-RedBlock-G129-Dex3-Joint    --enable_dex3_dds --robot_type g129
-# python sim_main.py --device cpu  --enable_cameras  --task  Isaac-PickPlace-RedBlock-G129-Inspire-Joint    --enable_inspire_dds --robot_type g129
-
-
-# python sim_main.py --device cpu  --enable_cameras  --task Isaac-Stack-RgyBlock-G129-Dex1-Joint     --enable_dex1_dds --robot_type g129
-# python sim_main.py --device cpu  --enable_cameras  --task Isaac-Stack-RgyBlock-G129-Dex3-Joint     --enable_dex3_dds --robot_type g129
-# python sim_main.py --device cpu  --enable_cameras  --task Isaac-Stack-RgyBlock-G129-Inspire-Joint     --enable_inspire_dds --robot_type g129
-
-
-
-
-# python sim_main.py --device cpu  --enable_cameras  --task Isaac-Move-Cylinder-G129-Dex1-Wholebody  --robot_type g129 --enable_dex1_dds 
-# python sim_main.py --device cpu  --enable_cameras  --task Isaac-Move-Cylinder-G129-Dex3-Wholebody  --robot_type g129 --enable_dex3_dds 
-# python sim_main.py --device cpu  --enable_cameras  --task Isaac-Move-Cylinder-G129-Inspire-Wholebody  --robot_type g129 --enable_inspire_dds 
-
-
-# python sim_main.py --device cpu  --enable_cameras  --task Isaac-PickPlace-Cylinder-H12-27dof-Inspire-Joint  --enable_inspire_dds --robot_type h1_2
-# python sim_main.py --device cpu  --enable_cameras  --task Isaac-PickPlace-RedBlock-H12-27dof-Inspire-Joint  --enable_inspire_dds --robot_type h1_2
-# python sim_main.py --device cpu  --enable_cameras  --task Isaac-Stack-RgyBlock-H12-27dof-Inspire-Joint --enable_inspire_dds --robot_type h1_2
+# python sim_main.py --device cpu  --enable_cameras  --task Isaac-Nav-G129-Dex1-Wholebody  --robot_type g129 --enable_dex1_dds --enable_wholebody_dds

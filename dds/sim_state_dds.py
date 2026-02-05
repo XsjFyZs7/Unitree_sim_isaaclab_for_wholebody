@@ -38,6 +38,12 @@ class SimStateDDS(DDSObject):
         )
 
         print(f"[{self.node_name}] Sim state DDS node initialized")
+        self.nav_task_latest = {}
+        try:
+            self.nav_task_sub = ChannelSubscriber("rt/nav_task", String_)
+            self.nav_task_sub.Init(self._nav_task_cb, 10)
+        except Exception as e:
+            pass
 
     
     def setup_publisher(self) -> bool:
@@ -72,6 +78,14 @@ class SimStateDDS(DDSObject):
             if data is None:
                 return
             # get sim state from environment
+            if self.nav_task_latest:
+                try:
+                    data["nav_pair_id"] = self.nav_task_latest.get("pair_id")
+                    data["nav_start_point"] = self.nav_task_latest.get("start_point")
+                    data["nav_end_point"] = self.nav_task_latest.get("end_point")
+                    data["nav_status"] = self.nav_task_latest.get("status")
+                except Exception:
+                    pass
             sim_state = json.dumps(data)
             self.sim_state.data = sim_state
             self.publisher.Write(self.sim_state)
@@ -91,6 +105,12 @@ class SimStateDDS(DDSObject):
         except Exception as e:
             print(f"sim_state_dds [{self.node_name}] Error processing subscribe data: {e}")
             return None
+
+    def _nav_task_cb(self, msg: String_):
+        try:
+            self.nav_task_latest = json.loads(msg.data)
+        except Exception:
+            pass
 
     def tensors_to_list(self, obj):
         if isinstance(obj, torch.Tensor):

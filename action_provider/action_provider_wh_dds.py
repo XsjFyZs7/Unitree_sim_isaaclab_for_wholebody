@@ -1,12 +1,15 @@
 # Copyright (c) 2025, Unitree Robotics Co., Ltd. All Rights Reserved.
 # License: Apache License, Version 2.0
 from action_provider.action_base import ActionProvider
+import random
 from typing import Optional
+
 import torch
 from dds.dds_master import dds_manager
 import os
 import onnxruntime as ort
 from dds.sharedmemorymanager import SharedMemoryManager
+from dds.reset_dds import ResetDDS
 import time
 import threading
 from isaaclab.utils.buffers import CircularBuffer,DelayBuffer
@@ -30,6 +33,7 @@ class DDSRLActionProvider(ActionProvider):
         self.gripper_dds = None
         self.dex3_dds = None
         self.inspire_dds = None
+        self.reset_dds = None
         self.run_command = None
         self._setup_dds()
         self._setup_joint_mapping()
@@ -78,6 +82,29 @@ class DDSRLActionProvider(ActionProvider):
         if self.enable_inspire:
             self._inspire_buf = torch.empty(12, device=device, dtype=torch.float32)
         
+        # -- 噪声注入参数初始化 --
+        self.noise_timer = 0
+        self.noise_duration = 0
+        self.noise_indices = None
+        self.noise_values = None
+        self.noise_probability = 0.05  # 每次调用 get_action 时，有 5% 的概率启动一次新的噪声事件
+        self.noise_scale = 3.14           # 噪声的最大幅度（单位：弧度）
+        self.max_noise_duration = 100     # 噪声事件的最长持续时间（单位：仿真步数）
+        self.min_noise_duration = 30     # 噪声事件的最短持续时间
+        self.num_noisy_joints = 3        # 每次噪声事件影响的关节数量
+        self.noise_active = False
+        self.min_noise_abs = 1.0
+        # -- 噪声注入参数初始化结束 --
+
+        # -- 构建仅包含上肢关节的索引列表 --
+        self.arm_action_indices = []
+        if hasattr(self, 'arm_joint_names') and hasattr(self, 'all_joint_names'):
+            arm_joint_set = set(self.arm_joint_names)
+            for i, joint_name in enumerate(self.all_joint_names):
+                if joint_name in arm_joint_set:
+                    self.arm_action_indices.append(i)
+        # -- 构建结束 --
+
     def _setup_dds(self):
         """Setup DDS communication"""
         print(f"enable_robot: {self.enable_robot}")
@@ -94,10 +121,47 @@ class DDSRLActionProvider(ActionProvider):
                 self.inspire_dds = dds_manager.get_object("inspire")
             if self.wh:
                 self.run_command_dds = dds_manager.get_object("run_command")
+            self.safety_dds = dds_manager.get_object("safety")
+            self.reset_dds = ResetDDS()
+            # self.reset_dds.setup_publisher()
             print(f"[{self.name}] DDS communication initialized")
         except Exception as e:
             print(f"[{self.name}] DDS initialization failed: {e}")
     
+    def _inject_noise(self, full_action):
+        if self.noise_active and self.noise_timer > 0 and self.noise_indices is not None and self.noise_values is not None:
+            print(f"Injecting noise at step. Timer: {self.noise_timer}")
+            full_action[self.noise_indices] += self.noise_values
+            self.noise_timer -= 1
+            if self.noise_timer == 0:
+                print("Noise event finished.")
+                self.noise_active = False
+                self.noise_indices = None
+                self.noise_values = None
+        elif not self.noise_active and random.random() < self.noise_probability:
+            print("Attempting to start a new noise event on arm joints...")
+            num_arm_action_indices = len(self.arm_action_indices)
+            if num_arm_action_indices >= self.num_noisy_joints:
+                self.noise_duration = random.randint(self.min_noise_duration, self.max_noise_duration)
+                chosen_indices = random.sample(self.arm_action_indices, self.num_noisy_joints)
+                self.noise_indices = torch.tensor(chosen_indices, device=self.env.device, dtype=torch.long)
+                self.noise_values = (torch.rand(self.num_noisy_joints, device=self.env.device) - 0.5) * 2 * self.noise_scale
+                sign = torch.where(self.noise_values >= 0, torch.ones_like(self.noise_values), -torch.ones_like(self.noise_values))
+                mask = torch.abs(self.noise_values) < self.min_noise_abs
+                self.noise_values = torch.where(mask, sign * self.min_noise_abs, self.noise_values)
+                self.noise_timer = self.noise_duration
+                self.noise_active = True
+                print(f"New noise event started. Duration: {self.noise_duration} steps.")
+                print(f"  - Applying noise to joints (indices): {self.noise_indices.cpu().numpy()}")
+                print(f"  - Noise values: {self.noise_values.cpu().numpy()}")
+                full_action[self.noise_indices] += self.noise_values
+                self.noise_timer -= 1
+            else:
+                self.noise_timer = 0
+                self.noise_indices = None
+                self.noise_values = None
+        return full_action
+
     def _setup_joint_mapping(self):
         """Setup joint mapping"""
         if self.wh:
@@ -293,6 +357,7 @@ class DDSRLActionProvider(ActionProvider):
         self.clip_actions = 100
         self.action_scale = 0.25
         self.sim_step_counter = 0
+        
     def load_policy(self,path):
         ext = os.path.splitext(path)[1].lower()
         if ext==".onnx":
@@ -310,9 +375,12 @@ class DDSRLActionProvider(ActionProvider):
             ort_outs = model.run(None, ort_inputs)
             return torch.tensor(ort_outs[0], device=self.env.device)
         return run_inference
+    
     def compute_current_observations(self):
         command = [0,0,0,0.8]  
         run_command = self.run_command_dds.get_run_command()
+        # print("-------------------------------------------------------")
+        # print("run command:",run_command)
         if run_command and 'run_command' in run_command:
             run_command_data = run_command['run_command']
             
@@ -334,11 +402,16 @@ class DDSRLActionProvider(ActionProvider):
                     command[3] = float(run_command_data[3])
                 except (IndexError, TypeError) as e:
                     print(f"[WARNING] cannot parse run_command data: {run_command_data}, error: {e}")
-            
-            self.run_command_dds.write_run_command([0.0,0,0,0.8])
-      
-        # command = [0.5,0.0,0.7,0.8]
+            # self.run_command_dds.write_run_command([0.0,0,0,0.8])
+        
+        # Timeout Safety Check
+        if hasattr(self.run_command_dds, 'last_update_time'):
+            time_since_update = time.time() - self.run_command_dds.last_update_time
+            if time_since_update > 0.5: # 0.5s timeout
+                command = [0.0, 0.0, 0.0, 0.8]
+
         command = torch.tensor(command, device=self.env.device, dtype=torch.float32)
+        # print("command:", command)
         
         if command.dim() == 1:
             command = command.unsqueeze(0)  # [4] -> [1, 4]
@@ -358,7 +431,9 @@ class DDSRLActionProvider(ActionProvider):
         ],
         dim=-1,
     )
+        # print("current_actor_obs:", current_actor_obs)
         return current_actor_obs
+    
     def compute_observations(self):
 
         current_actor_obs = self.compute_current_observations()
@@ -366,12 +441,14 @@ class DDSRLActionProvider(ActionProvider):
         self.actor_obs_buffer.append(current_actor_obs)
         actor_obs = self.actor_obs_buffer.buffer.reshape(self.num_envs, -1)
         actor_obs = torch.clip(actor_obs, -self.clip_obs, self.clip_obs)
+
         return actor_obs
     
     def run_policy(self):
         current_actor_obs = self.compute_observations()
         action = self.policy(current_actor_obs)
         return action
+    
     def get_action(self, env) -> Optional[torch.Tensor]:
         """Get action from DDS"""
         try:
@@ -434,15 +511,44 @@ class DDSRLActionProvider(ActionProvider):
                             full_action.index_copy_(0, self._inspire_target_idx_t, base_vals)
                             special_vals = self._inspire_buf.index_select(0, self._inspire_special_source_idx_t) * self._inspire_special_scales_t
                             full_action.index_copy_(0, self._inspire_special_target_idx_t, special_vals)
+            
+            # 为测试稳定性注入噪声
+            # full_action = self._inject_noise(full_action)
+
+            # Safety Check
+            if self.safety_dds:
+                if self.safety_dds.is_unsafe():
+                    print("!!! SAFETY INTERVENTION: FREEZING ROBOT !!!")
+                elif self.safety_dds.is_fuzzy():
+                    print("!!! WARNING: FUZZY STATE DETECTED - SLOWING DOWN !!!")
+
+            # print("full_action:", full_action)
             # 同步仿真多步
+            # self.env.step(full_action.unsqueeze(0))
             for _ in range(4):
                 self.env.scene["robot"].set_joint_position_target(full_action) 
                 self.env.scene.write_data_to_sim()                           
                 self.env.sim.step(render=False)                              
-                self.env.scene.update(dt=self.env.physics_dt)                    
-
+                self.env.scene.update(dt=self.env.physics_dt)               
             self.env.sim.render()
             self.env.observation_manager.compute()
+            self.env.termination_manager.compute()
+            # Apply interval events (e.g. disturbance trigger)
+            if "interval" in self.env.event_manager.available_modes:
+                self.env.event_manager.apply(mode="interval", dt=self.env.step_dt)
+            self.env.episode_length_buf += 4
+            
+            dones = self.env.termination_manager.dones
+
+            if torch.any(dones):
+                # self.reset_dds.publish(True)
+                env_ids_to_reset = dones.nonzero(as_tuple=False).squeeze(-1)
+                print(f"Resetting environments: {env_ids_to_reset.tolist()}")
+                self.env.reset(env_ids=env_ids_to_reset)
+                if hasattr(self.env, "reset_count"):
+                    self.env.reset_count += 1
+                    print(f"Reset count: {self.env.reset_count}")
+
             
         except Exception as e:
             print(f"[{self.name}] Get DDS action failed: {e}")

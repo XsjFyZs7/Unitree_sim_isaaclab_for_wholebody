@@ -48,6 +48,12 @@ def create_dds_objects(args_cli,env):
     dds_manager.register_object("rewards", rewards_dds)
     publish_names.append("rewards")
 
+    # Safety DDS
+    from dds.safety_dds import SafetyDDS
+    safety_dds = SafetyDDS()
+    dds_manager.register_object("safety", safety_dds)
+    subscribe_names.append("safety")
+
     dds_manager.start_publishing(publish_names)
     dds_manager.start_subscribing(subscribe_names)
     return reset_pose_dds,sim_state_dds,dds_manager

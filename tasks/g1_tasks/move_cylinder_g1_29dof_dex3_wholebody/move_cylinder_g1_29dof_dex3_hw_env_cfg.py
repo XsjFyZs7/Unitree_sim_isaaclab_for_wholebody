@@ -41,6 +41,8 @@ class ObjectTableSceneCfg(TableCylinderSceneCfgWH):
     # 5. humanoid robot configuration 
     robot: ArticulationCfg = G1RobotPresets.g1_29dof_dex3_wholebody(init_pos=(-3.9, -2.81811, 0.8),
         init_rot=(1, 0, 0, 0))
+    # robot: ArticulationCfg = G1RobotPresets.g1_29dof_dex3_wholebody(init_pos=(0.0, 0.0, 0.8),
+    #     init_rot=(1, 0, 0, 0))
 
     contact_forces = ContactSensorCfg(prim_path="/World/envs/env_.*/Robot/.*", history_length=10, track_air_time=True, debug_vis=False)
     # 6. add camera configuration 

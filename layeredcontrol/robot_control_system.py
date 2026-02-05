@@ -146,6 +146,7 @@ class RobotController:
             total_time = perf_counter() - step_start
             print(f"[Performance] A:{action_time*1000:.1f}ms, E:{env_time*1000:.1f}ms, S:{sleep_time*1000:.1f}ms, T:{total_time*1000:.1f}ms")
             self._profile_counter = 0
+    
     def cleanup(self):
         """clean up the resources"""
         self.stop()

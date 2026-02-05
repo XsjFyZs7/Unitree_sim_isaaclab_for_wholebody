@@ -1,0 +1,17 @@
+
+# Copyright (c) 2025, Unitree Robotics Co., Ltd. All Rights Reserved.
+# License: Apache License, Version 2.0  
+
+import gymnasium as gym
+
+from . import Nav_g1_29dof_dex1_hw_env_cfg
+
+
+gym.register(
+    id="Isaac-Nav-G129-Dex1-Wholebody",
+    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    kwargs={
+        "env_cfg_entry_point": Nav_g1_29dof_dex1_hw_env_cfg.NavG129Dex1WholebodyEnvCfg,
+    },
+    disable_env_checker=True,
+)

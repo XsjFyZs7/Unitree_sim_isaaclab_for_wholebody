@@ -48,6 +48,7 @@ class ObjectTableSceneCfg(TableCylinderSceneCfgWH):
     left_wrist_camera = CameraPresets.left_gripper_wrist_camera()
     right_wrist_camera = CameraPresets.right_gripper_wrist_camera()
     robot_camera = CameraPresets.g1_world_camera()
+    top_down_camera = CameraPresets.top_down_world_camera()
 ##
 # MDP settings
 ##
