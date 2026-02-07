@@ -43,8 +43,8 @@ def main():
     parser.add_argument("--robot_type", type=str, default="g129", help="机器人类型")
     
     # 调度控制
-    parser.add_argument("--start_idx", type=int, default=0, help="开始运行的 Episode 索引")
-    parser.add_argument("--end_idx", type=int, default=1, help="结束运行的 Episode 索引 (默认运行到最后)")
+    parser.add_argument("--start_idx", type=int, default=20, help="开始运行的 Episode 索引")
+    parser.add_argument("--end_idx", type=int, default=22, help="结束运行的 Episode 索引 (默认运行到最后)")
     parser.add_argument("--dry_run", action="store_true", help="仅打印命令而不执行")
     # 添加 device 参数
     parser.add_argument("--device", type=str, default="cpu", help="仿真设备 (cpu/cuda)")
@@ -101,7 +101,29 @@ def main():
         scene_id = episode.get("scene_id")
         start_position = episode.get("start_position")
         start_rotation = episode.get("start_rotation")
+        reference_path = episode.get("reference_path", [])
         
+        # 提取 Goal Position: 优先使用 goals (NaVILA 格式), 其次 gt_locations, 降级使用 reference_path
+        goals = episode.get("goals", [])
+        gt_locations = episode.get("gt_locations", [])
+        
+        goal_pos = None
+        success_radius = 3.0  # 默认值
+        
+        if goals and len(goals) > 0:
+            if "position" in goals[0]:
+                goal_pos = goals[0]["position"]
+                print(f"[Goal] Using 'goals' field: {goal_pos}")
+            if "radius" in goals[0]:
+                success_radius = goals[0]["radius"]
+                print(f"[Goal] Using 'goals' radius: {success_radius}")
+
+            
+        instruction_text = episode.get("instruction", {}).get("instruction_text", "")
+        print("--------------------------------------")
+        print(f"[DEBUG] 原始 Instruction Text: {instruction_text}")
+        print("--------------------------------------")
+
         # 简单校验
         if not scene_id or start_position is None or start_rotation is None:
             print(f"[跳过] Episode {global_idx}: 缺少必要字段 (scene_id, start_position, start_rotation)")
@@ -110,6 +132,7 @@ def main():
         print(f"[DEBUG] 原始 Scene ID: {scene_id}")
         print(f"[DEBUG] 原始 Start Position: {start_position}")
         print(f"[DEBUG] 原始 Start Rotation: {start_rotation}")
+        print(f"[DEBUG] 原始 Goal Position: {goal_pos}")
 
         # [Fix] Apply Z-offset for robot spawning to prevent falling/collision
         # Logic adapted from navila_eval.py and G1 default config
@@ -121,7 +144,7 @@ def main():
             elif "go2" in args.task.lower():
                 adjusted_start_position[2] += 0.4
             elif "g1" in args.task.lower():
-                adjusted_start_position[2] += 0.8
+                adjusted_start_position[2] += 0.6
             else:
                 adjusted_start_position[2] += 0.5
             print(f"[DEBUG] Adjusted Start Position (Z-offset applied): {adjusted_start_position}")
@@ -166,16 +189,20 @@ def main():
         cmd = [
             sys.executable, str(sim_script_path),
             "--task", args.task,
+            "--instruction", instruction_text,
             "--robot_type", args.robot_type,
             "--device", args.device, # 用户指定的设备
             "--max_episodes", "1",  # 强制只运行一个 episode 后退出
             "--isaac_scene_usd", scene_usd,
-            "--isaac_robot_init_pos", format_list_arg(adjusted_start_position),
-            "--isaac_robot_init_rot", format_list_arg(start_rotation),
+            "--episode_id", str(episode_id),
+            f"--isaac_robot_init_pos={format_list_arg(adjusted_start_position)}",
+            f"--isaac_robot_init_rot={format_list_arg(start_rotation)}",
+            f"--goal_pos={format_list_arg(goal_pos)}",
+            f"--success_radius={success_radius}",
             "--enable_dex1_dds", # 根据需要开启
             "--enable_wholebody_dds",
             "--enable_cameras",  # 必须启用相机
-            # "--headless"   # 无头模式 (保留，否则在服务器上无法运行)
+            "--headless"   # 无头模式 (保留，否则在服务器上无法运行)
         ] + extra_args
         
         print(f"[执行命令] {' '.join(cmd)}")

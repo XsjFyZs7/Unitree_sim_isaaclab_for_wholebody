@@ -48,6 +48,12 @@ def create_dds_objects(args_cli,env):
     dds_manager.register_object("rewards", rewards_dds)
     publish_names.append("rewards")
 
+    # Instruction DDS
+    from dds.instruction_dds import InstructionDDS
+    instruction_dds = InstructionDDS()
+    dds_manager.register_object("instruction", instruction_dds)
+    publish_names.append("instruction")
+
     # Safety DDS
     from dds.safety_dds import SafetyDDS
     safety_dds = SafetyDDS()

@@ -4,12 +4,9 @@
 #!/usr/bin/env python3
 # main.py
 import os
-
-project_root = os.path.dirname(os.path.abspath(__file__))
-os.environ["PROJECT_ROOT"] = project_root
-
 import argparse
 import contextlib
+import pinocchio
 import time
 import sys
 import signal
@@ -20,12 +17,16 @@ from pathlib import Path
 # Isaac Lab AppLauncher
 from isaaclab.app import AppLauncher
 
-from image_server.image_server import ImageServer
-from dds.dds_create import create_dds_objects,create_dds_objects_replay
+project_root = os.path.dirname(os.path.abspath(__file__))
+os.environ["PROJECT_ROOT"] = project_root
+if project_root not in sys.path:
+    sys.path.append(project_root)
+
 # add command line arguments
 parser = argparse.ArgumentParser(description="Unitree Simulation")
 parser.add_argument("--task", type=str, default="Isaac-PickPlace-G129-Head-Waist-Fix", help="task name")
-parser.add_argument("--action_source", type=str, default="dds", 
+parser.add_argument("--instruction", type=str, default="", help="Instruction text for VLM")
+parser.add_argument("--action_source", type=str, default="dds_wholebody", 
                    choices=["dds", "file", "trajectory", "policy", "replay","dds_wholebody"], 
                    help="Action source")
 
@@ -82,6 +83,13 @@ parser.add_argument("--max_episodes", type=int, default=1, help="Maximum number 
 parser.add_argument("--isaac_scene_usd", type=str, default=None, help="ISAAC_SCENE_USD environment variable value")
 parser.add_argument("--isaac_robot_init_pos", type=str, default=None, help="ISAAC_ROBOT_INIT_POS environment variable value")
 parser.add_argument("--isaac_robot_init_rot", type=str, default=None, help="ISAAC_ROBOT_INIT_ROT environment variable value")
+parser.add_argument("--episode_id", type=str, default="", help="Scene ID for logging")
+
+
+# Navigation Task Arguments
+parser.add_argument("--goal_pos", type=str, default=None, help="Goal position (x,y,z) for navigation metrics")
+parser.add_argument("--success_radius", type=float, default=3.0, help="Success radius for navigation metrics")
+parser.add_argument("--max_steps", type=int, default=500, help="Maximum steps per episode")
 
 # add AppLauncher parameters
 AppLauncher.add_app_launcher_args(parser)
@@ -101,18 +109,26 @@ if args_cli.enable_dex3_dds and args_cli.enable_dex1_dds and args_cli.enable_ins
     sys.exit(1)
 
 
-import pinocchio 
-app_launcher = AppLauncher(args_cli)
+
+# [Fix] Register local extensions path
+# This must be done BEFORE AppLauncher is initialized so Kit knows where to look for extensions
+local_ext_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "isaaclab_exts")
+if os.path.exists(local_ext_path):
+    sys.argv.append(f"--ext-folder={local_ext_path}")
+    print(f"[INFO] Added local extension path: {local_ext_path}")
+else:
+    print(f"[WARN] Local extension path not found: {local_ext_path}")
+
+app_launcher = AppLauncher(args_cli, enable_extensions=["omni.kit.asset_converter", "omni.isaac.core"])
 simulation_app = app_launcher.app
 
-# [Fix] Explicitly enable Matterport extension required for the scene
-# This is necessary because we are not passing it via CLI arguments to avoid parser errors
-try:
-    from omni.isaac.core.utils.extensions import enable_extension
-    enable_extension("omni.isaac.matterport")
-    print("[INFO] Successfully enabled omni.isaac.matterport extension.")
-except Exception as e:
-    print(f"[WARN] Failed to enable omni.isaac.matterport extension: {e}")
+# [Fix] Delayed imports to prevent 'omni.kit_app' pre-loading warning
+# These modules might import omni/pxr libraries indirectly, so we import them after SimulationApp starts
+
+from unitree_sdk2py.core.channel import ChannelPublisher
+from unitree_sdk2py.idl.std_msgs.msg.dds_ import String_
+from image_server.image_server import ImageServer
+from dds.dds_create import create_dds_objects, create_dds_objects_replay
 
 # [Fix] Monkey patch for Isaac Sim 5.0.0 ResolvedPath issue (ResolvedPath vs str type mismatch)
 try:
@@ -158,7 +174,8 @@ from tools.data_json_load import sim_state_to_json
 from dds.sim_state_dds import *
 from action_provider.create_action_provider import create_action_provider
 from tools.get_stiffness import get_robot_stiffness_from_env
-from tools.get_reward import get_step_reward_value,get_current_rewards
+import numpy as np
+from tools.measures import MeasureManager, PathLength, DistanceToGoal, Success, SPL
 
 def setup_signal_handlers(controller,dds_manager=None):
     """set signal handlers"""
@@ -401,6 +418,38 @@ def main():
     env.sim.reset()
     env.reset()
     
+    # [Fix] Headless/No-render mode collision issue: Warmup physics
+    # In headless mode, complex meshes (like Matterport) sometimes fail to cook collision meshes 
+    # if simulation starts immediately. Running a few steps warms up the physics engine.
+    if getattr(args_cli, "headless", False) or args_cli.no_render:
+        warmup_steps = 200 # NaVILA uses 200 steps for H1/G1 robots
+        print(f"[INFO] Headless/No-render mode detected. Performing physics warmup ({warmup_steps} steps) to ensure collision meshes are loaded...")
+        
+        # Access robot to hold it in place
+        robot = env.scene["robot"]
+        # Use the default root state (defined in config) as the safe holding position
+        safe_root_state = robot.data.default_root_state.clone()
+        
+        # Check if initial height is safe (approximate check)
+        avg_z = safe_root_state[:, 2].mean().item()
+        # print(f"[DEBUG] Robot Default Root State Z: {avg_z:.4f}")
+        
+        if avg_z < 0.5:
+            print(f"[WARN] Robot initial Z height is approx {avg_z:.2f}m. Ensure ISAAC_ROBOT_INIT_POS is set high enough (e.g. >1.0m for H1) to prevent clipping.")
+
+        for i in range(warmup_steps):
+            # Force reset robot root state every step to prevent falling while collision meshes are cooking
+            robot.write_root_state_to_sim(safe_root_state)
+            env.sim.step()
+            
+        env.reset()
+        print("[INFO] Physics warmup completed.")
+        
+        # Check position AFTER warmup and reset
+        robot.update(dt=env.sim.get_physics_dt())
+        curr_pos_after = robot.data.root_pos_w[0].cpu().numpy()
+        print(f"[INFO] Robot Position AFTER Warmup & Reset: {curr_pos_after} (Z should be stable)")
+    
     
     # create simplified control configuration
     try:    
@@ -413,6 +462,44 @@ def main():
         return
     
     # create controller
+    
+    # [Navigation Metrics] Initialization
+    measure_manager = MeasureManager()
+    
+    # Parse goal_pos
+    goal_pos = None
+    if args_cli.goal_pos:
+        try:
+            goal_pos = [float(x) for x in args_cli.goal_pos.split(',')]
+        except ValueError:
+            print(f"[Warning] Invalid goal_pos format: {args_cli.goal_pos}")
+
+    # Construct minimal episode dict for measures
+    episode_info = {
+        "goals": [{"radius": args_cli.success_radius}],
+        "goal_pos": goal_pos,
+        "start_pos": [0, 0, 0], # Placeholder, updated internally if needed or via CLI
+        "gt_locations": [] # Can be populated if waypoints are available
+    }
+
+    # Register Measures
+    if goal_pos:
+        print(f"[Metrics] Initializing Navigation Metrics (Goal: {goal_pos}, Radius: {args_cli.success_radius})")
+        measure_manager.register_measure(PathLength(env, episode_info, measure_manager))
+        measure_manager.register_measure(DistanceToGoal(env, episode_info))
+        measure_manager.register_measure(Success(env, episode_info, measure_manager))
+        measure_manager.register_measure(SPL(env, episode_info, measure_manager))
+        
+        # Reset measures
+        measure_manager.reset_measures()
+    else:
+        print("[Metrics] No goal_pos provided. Navigation metrics disabled.")
+
+    # Stuck Detection Variables
+    prev_pos = None
+    same_pos_count = 0
+    STUCK_THRESHOLD = 0.01 # 1cm
+    STUCK_STEPS = 500 # 5.0s at 100Hz (Increased from 50 to avoid false positives)
 
     if not args_cli.replay_data:
         print("========= create image server =========")
@@ -426,6 +513,22 @@ def main():
         try:
             reset_pose_dds,sim_state_dds,dds_manager = create_dds_objects(args_cli,env)
             safety_dds = dds_manager.get_object("safety")
+            
+            # Setup instruction publisher
+            instr_pub = ChannelPublisher("rt/instruction", String_)
+            instr_pub.Init()
+            instr_msg = String_(args_cli.instruction)
+
+            # Publish instruction using InstructionDDS
+            if args_cli.instruction:
+                try:
+                    instruction_dds = dds_manager.get_object("instruction")
+                    if instruction_dds:
+                        time.sleep(0.5) 
+                        instruction_dds.publish_instruction(args_cli.instruction)
+                except Exception as e:
+                    print(f"[DDS] Failed to publish instruction: {e}")
+            
         except Exception as e:
             print(f"Failed to create dds: {e}")
             return
@@ -492,6 +595,21 @@ def main():
         # main loop - execute in main thread to support rendering
         last_stats_time = time.time()
         loop_start_time = time.time()
+        
+        # [Fix] RTF Locking initialization
+        # Try to get simulation dt from environment config
+        try:
+            sim_dt = env.unwrapped.cfg.sim.dt
+            decimation = env.unwrapped.cfg.decimation
+            step_dt = sim_dt * decimation
+            print(f"[RTF Lock] Detected sim_dt={sim_dt}, decimation={decimation}, step_dt={step_dt}")
+        except:
+            # Fallback to step_hz
+            step_dt = 1.0 / args_cli.step_hz
+            print(f"[RTF Lock] Could not detect sim params, using step_hz={args_cli.step_hz} -> step_dt={step_dt}")
+
+        rtf_start_time = time.time()
+
         loop_count = 0
         last_loop_time = time.time()
         recent_loop_times = []  # for calculating moving average frequency
@@ -502,14 +620,29 @@ def main():
         # use torch.inference_mode() and exception suppression
         with contextlib.suppress(KeyboardInterrupt), torch.inference_mode():
             while simulation_app.is_running() and controller.is_running:
+                # Publish instruction periodically (or every step)
+                if not args_cli.replay_data:
+                    try:
+                        instr_pub.Write(instr_msg)
+                    except Exception:
+                        pass
+                
                 # Check for max episodes exit condition
-                current_reset_count = getattr(env, "reset_count", 0)
-                if current_reset_count >= args_cli.max_episodes:
-                    print(f"\n[Main] Reached max episodes ({args_cli.max_episodes}), exiting simulation loop.")
-                    break
+                # current_reset_count = getattr(env, "reset_count", 0)
+                # if current_reset_count >= args_cli.max_episodes:
+                #     print(f"\n[Main] Reached max episodes ({args_cli.max_episodes}), exiting simulation loop.")
+                #     break
 
                 current_time = time.time()
                 loop_count += 1
+                
+                # [DEBUG] Fall Monitor
+                if loop_count < 50:
+                    robot_z = env.scene["robot"].data.root_pos_w[0, 2].item()
+                    print(f"[DEBUG] Step {loop_count}: Robot Z = {robot_z:.4f}")
+                    if robot_z < -1.0:
+                         print("[FATAL] Robot has fallen below -1.0m! Collision mesh likely missing.")
+
                 if not args_cli.replay_data:
                     try:
                         env_state = env.scene.get_state()
@@ -518,24 +651,68 @@ def main():
                         joint_torques = sim_state_to_json(env.scene["robot"].data.applied_torque)
 
                         # Call termination functions to get boolean flags
+                        # Use standard Isaac Lab MDP functions to align with EnvCfg
                         from tasks.common_termination.base_termination_nav_wholebody import contact_force_termination, check_fall_risk_termination
                         from tasks.common_termination.base_termination_nav_wholebody import check_joint_limit_termination, check_timeout_termination
                         is_contact_force_exceeded = contact_force_termination(env)
                         is_fall_risk = check_fall_risk_termination(env)
+                        
                         nav_task_latest = getattr(sim_state_dds, "nav_task_latest", {})
-                        is_joint_limit = check_joint_limit_termination(env)
-                        is_timeout = check_timeout_termination(env)
+                        
+                        # [Navigation Metrics] Update
+                        # 1. Update Measures
+                        if goal_pos:
+                            measure_manager.update_measures()
+                        
+                        # 2. Stuck Detection
+                        current_pos = env.scene["robot"].data.root_pos_w[0].detach().cpu().numpy()
+                        if prev_pos is not None:
+                            dist = np.linalg.norm(current_pos - prev_pos)
+                            if dist < STUCK_THRESHOLD:
+                                same_pos_count += 1
+                            else:
+                                same_pos_count = 0
+                        prev_pos = current_pos
+                        
+                        is_stuck = same_pos_count >= STUCK_STEPS
+                        
+                        # 3. Stop Command Check (Logic: VLM outputs "Stop" instruction or velocity is zeroed by provider)
+                        # Checking instruction string from DDS or ActionProvider state if available
+                        # Assuming ActionProvider might have a way to signal stop, or we check instruction text
+                        is_stop_called = False
+                        if "Stop" in args_cli.instruction: # Simple check if initial instruction was stop (unlikely)
+                             is_stop_called = True
+                        
+                        # Check if nav_task_latest has instruction update indicating stop
+                        if isinstance(nav_task_latest, dict) and "instruction" in nav_task_latest:
+                             if "stop" in nav_task_latest["instruction"].lower():
+                                 is_stop_called = True
+
+                        # Set stop flag for Success measure
+                        setattr(env, "is_stop_called", is_stop_called)
+
+                        # is_joint_limit = check_joint_limit_termination(env)
+                        # is_timeout = check_timeout_termination(env)
+                        
+                        # Get Measurements
+                        measurements = measure_manager.get_measurements() if goal_pos else {}
 
                         sim_state = {
                             "init_state": env_state_json,
                             "task_name": args_cli.task,
+                            "episode_id": args_cli.episode_id,
                             "joint_torque": joint_torques,
                             "is_unsafe": safety_dds.is_unsafe(),
                             "force_exceeded": is_contact_force_exceeded.item(), # .item() converts tensor to Python bool
+                            "fall_risk": is_fall_risk.item(),
                             "reset_count": getattr(env, "reset_count", 0),
-                            # "fall_risk": is_fall_risk.item(),
-                            # "is_timeout": is_timeout.item()
+                            "metrics": measurements,
+                            "is_success": measurements.get("success", 0.0) > 0.5 if "success" in measurements else False
                         }
+                        
+                        # Force stop if stuck or max steps (handled by termination check usually, but enforcing here if needed)
+                        if is_stuck:
+                            print(f"[Info] Robot stuck for {STUCK_STEPS} steps. Forcing reset/done logic if applicable.")
                     except Exception as e:
                         print(f"Failed to get env state: {e}")
                         raise e
@@ -553,14 +730,6 @@ def main():
                         raise e
                     # # print(f"reset_pose_cmd: {reset_pose_cmd}")
                     # Compute current reward values manually if needed for debugging
-                    try:
-                        if (loop_count % reward_interval) == 0:
-                            pass
-                            # current_reward = get_step_reward_value(env)
-                            # print(f"reward: {current_reward}")
-                    except Exception as e:
-                        print(f"奖励计算失败: {e}")
-                        pass
                     
                     if reset_pose_cmd is not None:
                         try:
@@ -608,6 +777,22 @@ def main():
                 if len(recent_loop_times) > 100:
                     recent_loop_times.pop(0)
                 
+                # Check for max episodes exit condition AFTER data collection to ensure last frame is recorded
+                if getattr(env, "reset_count", 0) >= args_cli.max_episodes:
+                    print(f"\n[Main] Reached max episodes ({args_cli.max_episodes}), exiting simulation loop.")
+                    break
+
+                # [Fix] RTF Locking Execution
+                # Ensure we don't run faster than real-time
+                # Target time for this step (relative to start)
+                expected_time = (loop_count - 1) * step_dt
+                actual_time = time.time() - rtf_start_time
+                
+                if actual_time < expected_time:
+                    sleep_time = expected_time - actual_time
+                    if sleep_time > 0.001: # Avoid sleeping for negligible amounts
+                        time.sleep(sleep_time)
+
                 # execute control step (in main thread, support rendering)
                 controller.step()
 
