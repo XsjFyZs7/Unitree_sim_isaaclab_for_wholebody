@@ -1,5 +1,5 @@
-# # Copyright (c) 2025, Unitree Robotics Co., Ltd. All Rights Reserved.
-# # License: Apache License, Version 2.0
+# Copyright (c) 2025, Unitree Robotics Co., Ltd. All Rights Reserved.
+# License: Apache License, Version 2.0
 # from action_provider.action_base import ActionProvider
 # import random
 # from typing import Optional
@@ -532,7 +532,7 @@
 #                 self.env.scene.update(dt=self.env.physics_dt)               
 #             self.env.sim.render()
 #             self.env.observation_manager.compute()
-#             self.env.termination_manager.compute()
+#             # self.env.termination_manager.compute()
 #             # Apply interval events (e.g. disturbance trigger)
 #             if "interval" in self.env.event_manager.available_modes:
 #                 self.env.event_manager.apply(mode="interval", dt=self.env.step_dt)
@@ -575,8 +575,8 @@
 #         except Exception as e:
 #             print(f"[{self.name}] Clean up DDS resources failed: {e}")
 
-# Copyright (c) 2025, Unitree Robotics Co., Ltd. All Rights Reserved.
-# License: Apache License, Version 2.0
+# # Copyright (c) 2025, Unitree Robotics Co., Ltd. All Rights Reserved.
+# # License: Apache License, Version 2.0
 from action_provider.action_base import ActionProvider
 import random
 from typing import Optional

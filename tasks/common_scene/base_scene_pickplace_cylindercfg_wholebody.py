@@ -77,27 +77,27 @@ class TableCylinderSceneCfgWH(InteractiveSceneCfg): # inherit from the interacti
     # )
 
     # 3. Fixed obstacles (native geometry)
-    obstacle_1 = AssetBaseCfg(
-        prim_path="/World/envs/env_.*/NoiseObstacle_1",
-        init_state=AssetBaseCfg.InitialStateCfg(pos=[-4.2, 0.0, 0.75], rot=[1.0, 0.0, 0.0, 0.0]),
-        spawn=sim_utils.CuboidCfg(
-            size=(1.4, 0.8, 1.5),
-            rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
-            collision_props=sim_utils.CollisionPropertiesCfg(),
-            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.8, 0.3, 0.2), metallic=0.0),
-        ),
-    )
+    # obstacle_1 = AssetBaseCfg(
+    #     prim_path="/World/envs/env_.*/NoiseObstacle_1",
+    #     init_state=AssetBaseCfg.InitialStateCfg(pos=[-4.2, 0.0, 0.75], rot=[1.0, 0.0, 0.0, 0.0]),
+    #     spawn=sim_utils.CuboidCfg(
+    #         size=(1.4, 0.8, 1.5),
+    #         rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
+    #         collision_props=sim_utils.CollisionPropertiesCfg(),
+    #         visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.8, 0.3, 0.2), metallic=0.0),
+    #     ),
+    # )
 
-    obstacle_2 = AssetBaseCfg(
-        prim_path="/World/envs/env_.*/NoiseObstacle_2",
-        init_state=AssetBaseCfg.InitialStateCfg(pos=[-1.0, -4.0, 0.6], rot=[1.0, 0.0, 0.0, 0.0]),
-        spawn=sim_utils.CuboidCfg(
-            size=(0.8, 1.0, 1.2),
-            rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
-            collision_props=sim_utils.CollisionPropertiesCfg(),
-            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.2, 0.6, 0.9), metallic=0.0),
-        ),
-    )
+    # obstacle_2 = AssetBaseCfg(
+    #     prim_path="/World/envs/env_.*/NoiseObstacle_2",
+    #     init_state=AssetBaseCfg.InitialStateCfg(pos=[-1.0, -4.0, 0.6], rot=[1.0, 0.0, 0.0, 0.0]),
+    #     spawn=sim_utils.CuboidCfg(
+    #         size=(0.8, 1.0, 1.2),
+    #         rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
+    #         collision_props=sim_utils.CollisionPropertiesCfg(),
+    #         visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.2, 0.6, 0.9), metallic=0.0),
+    #     ),
+    # )
 
     # Lights
     # 4. light configuration

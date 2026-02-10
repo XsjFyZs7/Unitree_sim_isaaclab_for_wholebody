@@ -40,10 +40,10 @@ class ObjectTableSceneCfg(TableCylinderSceneCfgWH):
     
     # Humanoid robot w/ arms higher
     # 5. humanoid robot configuration 
-    robot: ArticulationCfg = G1RobotPresets.g1_29dof_dex1_wholebody(init_pos=(-4.5, -2.8, 0.8),
+    robot: ArticulationCfg = G1RobotPresets.g1_29dof_dex1_wholebody(init_pos=(-3.5, 1.5, 0.8),
     # robot: ArticulationCfg = G1RobotPresets.g1_29dof_dex1_wholebody(init_pos=(-3.5, 1.5, 0.8),
-        # init_rot=(0.7071, 0, 0, -0.7071))
-        init_rot=(1.0, 0, 0, 0))
+        init_rot=(0.7071, 0, 0, -0.7071))
+        # init_rot=(1.0, 0, 0, 0))
 
     contact_forces = ContactSensorCfg(prim_path="/World/envs/env_.*/Robot/.*", history_length=10, track_air_time=True, debug_vis=True)
     # 6. add camera configuration 
@@ -162,7 +162,7 @@ class RewardsCfg:
 
 @configclass
 class EventCfg:
-    # pass
+    pass
 
     reset_robot = EventTermCfg(
         func=mdp.reset_root_state_uniform,
@@ -181,25 +181,25 @@ class EventCfg:
     
     # File-based Disturbance Scheduler (Benchmark Mode)
     # Assigns a specific test case (time, velocity) from the JSON file to each episode sequentially
-    disturbance_scheduler = EventTermCfg(
-        func=mdp.reset_disturbance_scheduler,
-        mode="reset",
-        params={
-            "benchmark_path": "/home/wyh/WYH/isaac_nav_bridge/external_force/safety_benchmark_cases.json",
-        },
-    )
+    # disturbance_scheduler = EventTermCfg(
+    #     func=mdp.reset_disturbance_scheduler,
+    #     mode="reset",
+    #     params={
+    #         "benchmark_path": "/home/wyh/WYH/isaac_nav_bridge/external_force/safety_benchmark_cases.json",
+    #     },
+    # )
 
-    # File-based Disturbance Trigger
-    # Runs every step to check if the scheduled time has arrived
-    disturbance_trigger = EventTermCfg(
-        func=mdp.apply_disturbance_scheduler,
-        mode="interval", 
-        interval_range_s=(0.02, 0.02), # Check every step
-        params={
-            "benchmark_path": "/home/wyh/WYH/isaac_nav_bridge/external_force/safety_benchmark_cases.json",
-            "asset_cfg": SceneEntityCfg("robot"),
-        },
-    )
+    # # File-based Disturbance Trigger
+    # # Runs every step to check if the scheduled time has arrived
+    # disturbance_trigger = EventTermCfg(
+    #     func=mdp.apply_disturbance_scheduler,
+    #     mode="interval", 
+    #     interval_range_s=(0.02, 0.02), # Check every step
+    #     params={
+    #         "benchmark_path": "/home/wyh/WYH/isaac_nav_bridge/external_force/safety_benchmark_cases.json",
+    #         "asset_cfg": SceneEntityCfg("robot"),
+    #     },
+    # )
     
     # reset_object = EventTermCfg(
     #     func=mdp.reset_root_state_uniform,  # use uniform distribution reset function

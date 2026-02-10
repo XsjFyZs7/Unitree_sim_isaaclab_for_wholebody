@@ -43,8 +43,8 @@ def main():
     parser.add_argument("--robot_type", type=str, default="g129", help="机器人类型")
     
     # 调度控制
-    parser.add_argument("--start_idx", type=int, default=20, help="开始运行的 Episode 索引")
-    parser.add_argument("--end_idx", type=int, default=22, help="结束运行的 Episode 索引 (默认运行到最后)")
+    parser.add_argument("--start_idx", type=int, default=121, help="开始运行的 Episode 索引")
+    parser.add_argument("--end_idx", type=int, default=122, help="结束运行的 Episode 索引 (默认运行到最后)")
     parser.add_argument("--dry_run", action="store_true", help="仅打印命令而不执行")
     # 添加 device 参数
     parser.add_argument("--device", type=str, default="cpu", help="仿真设备 (cpu/cuda)")
@@ -202,7 +202,7 @@ def main():
             "--enable_dex1_dds", # 根据需要开启
             "--enable_wholebody_dds",
             "--enable_cameras",  # 必须启用相机
-            "--headless"   # 无头模式 (保留，否则在服务器上无法运行)
+            # "--headless"   # 无头模式 (保留，否则在服务器上无法运行)
         ] + extra_args
         
         print(f"[执行命令] {' '.join(cmd)}")
